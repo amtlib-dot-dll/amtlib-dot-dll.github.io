@@ -1,0 +1,391 @@
+<pre>
+#include "DSP281x_Device.h"
+#include "DSP281x_Examples.h"
+#include "stdio.h" // DSP281x Include File
+
+#define highestspeed ((unsigned int)0x0100)
+//#define lowestspeed ((unsigned int)0x0e00)
+////定义调速范围
+#define lowestspeed ((unsigned int)0x0a00) //定义调速范围
+
+/*LCD显示相关定义*/
+#define LCDDELAY 1
+#define LCDCMDTURNON 0x3f
+#define LCDCMDTURNOFF 0x3e
+#define LCDCMDSTARTLINE 0xc0
+#define LCDCMDPAGE 0xb8
+#define LCDCMDVERADDRESS 0x40 //行列页等
+#define CTRGR *(int *)0x108000
+#define CTRLCDCMDR *(int *)0x108001
+#define CTRKEY *(int *)0x108001
+#define CTRLCDCR *(int *)0x108002
+#define CTRCLKEY *(int *)0x108002
+#define CTRLCDLCR *(int *)0x108003
+#define CTRLCDRCR *(int *)0x108004
+#define CTRLA *(int *)0x108005
+#define CTRLR *(int *)0x108007
+#define ADC_usDELAY 8000L
+#define ADC_usDELAY2 20L
+#define PIEACK_GROUP1 0x0001
+
+volatile int right[6] = {5, 4, 6, 2, 3, 1};    //正向霍尔状态表
+volatile int contrary[6] = {5, 1, 3, 2, 6, 4}; //反向霍尔状态表
+// volatile unsigned int
+// ActSeq_right[6]={0x0380,0x0083,0x0803,0x0830,0x0038,0x0308};
+volatile unsigned int ActSeq_right[6] = {0x0083, 0x0803, 0x0830, 0x0038,
+                                         0x0308, 0x0380}; //正向ACTRA控制字表 ??
+// volatile unsigned int
+// ActSeq_contrary[6]={0x0038,0x0830,0x0803,0x0083,0x0380,0x0308};
+// //反向ACTRA控制字表   一个全通，一个脉冲故一个3一个8
+volatile unsigned int ActSeq_contrary[6] = {0x0308, 0x0038, 0x0830,
+                                            0x0803, 0x0083, 0x0380};
+void Delay(unsigned int nTime); //延时子程序
+void TurnOnLCD();               //打开显示
+void LCDCLS();                  //清除屏幕显示内容
+void PID_Control(); // PID控制函数
+interrupt void CAP123_isr(void);
+interrupt void T2PINT_isr(void);
+interrupt void adc_isr(void);
+Uint16 state = 0;             //当前状态寄存器
+Uint16 i = 0;                 //循环参数
+Uint16 j = 0;                 //当前状态编号
+// Uint16 k=0;
+// //进入计时中断的次数
+float EK = 0, EK1 = 0, EK2 = 0, UK = 0, Cmp = 0x0e00;
+float Kp = 0.2, Ki = 0.01, Kd = 0.0; //换向次数累加器
+Uint16 n = 0;                        //转速
+Uint16 speed = 100;                  //设定速度
+Uint16 jjj = 0;
+Uint16 kk = 0;
+Uint16 nScanCode = 0; //键盘值
+Uint16 keyres = 0;
+Uint16 cKey = 0;
+Uint16 uPort8000 = 0; //清零
+Uint16 change;
+Uint16 ConversionCount = 0;
+Uint16 Voltage1[200];
+Uint16 test = 0, dv,  quan, dest, v,v0,v1, con=0, Flag = 0,i0=0,direction;
+
+unsigned char ledkey[10][8] = {
+    {0x00, 0x00, 0x7C, 0x82, 0x82, 0x82, 0x7C, 0x00}, // 0 数字字模码
+    {0x00, 0x00, 0x00, 0x84, 0xFE, 0x80, 0x00, 0x00}, // 1
+    {0x00, 0x00, 0x84, 0xC2, 0xA2, 0x92, 0x8C, 0x00}, // 2
+    {0x00, 0x00, 0x44, 0x92, 0x92, 0x92, 0x6C, 0x00}, // 3
+    {0x00, 0x00, 0x30, 0x28, 0x24, 0xFE, 0x20, 0x00}, // 4
+    {0x00, 0x00, 0x4E, 0x92, 0x92, 0x92, 0x62, 0x00}, // 5
+    {0x00, 0x00, 0x7C, 0x92, 0x92, 0x92, 0x64, 0x00}, // 6
+    {0x00, 0x00, 0x02, 0xC2, 0x32, 0x0A, 0x06, 0x00}, // 7
+    {0x00, 0x00, 0x6C, 0x92, 0x92, 0x92, 0x6C, 0x00}, // 8
+    {0x00, 0x00, 0x4C, 0x92, 0x92, 0x92, 0x7C, 0x00} // 9
+};
+
+main() {
+  /*配置系统时钟、中断控制寄存器及中断向量表*/
+  InitSysCtrl(); //初始化系统时钟（5倍频/150MHz）及高速外设时钟（2分频/75MHz）
+  InitPieCtrl(); //初始化中断控制寄存器
+  InitPieVectTable(); //初始化中断向量表
+  IER = 0x0000;
+  IFR = 0x0000; //初始化中断寄存器
+
+  /*配置多路转换寄存器GPAMUX*/
+  EALLOW; //允许对保护寄存器的访问
+  GpioMuxRegs.GPAMUX.bit.PWM1_GPIOA0 = 1;
+  GpioMuxRegs.GPAMUX.bit.PWM2_GPIOA1 = 1;
+  GpioMuxRegs.GPAMUX.bit.PWM3_GPIOA2 = 1;
+  GpioMuxRegs.GPAMUX.bit.PWM4_GPIOA3 = 1;
+  GpioMuxRegs.GPAMUX.bit.PWM5_GPIOA4 = 1;
+  GpioMuxRegs.GPAMUX.bit.PWM6_GPIOA5 = 1; //初始化GPIO口输出PWM波
+  GpioMuxRegs.GPAMUX.bit.CAP1Q1_GPIOA8 = 1;
+  GpioMuxRegs.GPAMUX.bit.CAP2Q2_GPIOA9 = 1;
+  GpioMuxRegs.GPAMUX.bit.CAP3QI1_GPIOA10 = 1; //初始化GPIO口为霍尔信号输入口
+  GpioMuxRegs.GPAQUAL.bit.QUALPRD = 3;        //设置采样窗口宽度
+  EDIS;
+  //关闭对保护寄存器的访问
+
+  /*配置CAP1-CAP3的捕获*/
+  EvaRegs.CAPCONA.bit.CAP12TSEL = 1; //捕获单元1和2使用通用定时器1
+  EvaRegs.CAPCONA.bit.CAP3TSEL = 1;  //捕获单元3使用通用定时器1
+  EvaRegs.CAPCONA.bit.CAP12EN = 1;   //使能捕获单元1和2
+  EvaRegs.CAPCONA.bit.CAP3EN = 1;    //使能捕获单元3
+  EvaRegs.CAPCONA.bit.CAP1EDGE = 3;
+  EvaRegs.CAPCONA.bit.CAP2EDGE = 3;
+  EvaRegs.CAPCONA.bit.CAP3EDGE = 3; //捕获单元1-3检测两个边沿
+  EvaRegs.CAPFIFOA.bit.CAP1FIFO = 1;
+  EvaRegs.CAPFIFOA.bit.CAP2FIFO = 1;
+  EvaRegs.CAPFIFOA.bit.CAP3FIFO = 1; //设置捕获单元FIFO的存储状态（一个输入）
+
+  /*配置中断*/
+  EvaRegs.EVAIMRC.bit.CAP1INT = 1;
+  EvaRegs.EVAIMRC.bit.CAP2INT = 1;
+  EvaRegs.EVAIMRC.bit.CAP3INT = 1;
+  EvaRegs.EVAIMRB.bit.T2PINT = 1; //关中断屏蔽
+  EvaRegs.EVAIFRC.bit.CAP1INT = 1;
+  EvaRegs.EVAIFRC.bit.CAP2INT = 1;
+  EvaRegs.EVAIFRC.bit.CAP3INT = 1;
+  EvaRegs.EVAIFRB.bit.T2PINT = 1; //中断使能
+  EALLOW;                         //允许对保护寄存器的访问
+  PieVectTable.CAPINT1 = &CAP123_isr;
+  PieVectTable.CAPINT2 = &CAP123_isr;
+  PieVectTable.CAPINT3 = &CAP123_isr;
+  PieVectTable.T2PINT = &T2PINT_isr;
+  PieVectTable.ADCINT=&adc_isr;
+  PieCtrlRegs.PIEACK.bit.ACK3 = 1; //使能PIE级中断
+  PieCtrlRegs.PIEIER3.all = 0x71;
+  PieCtrlRegs.PIECRTL.bit.ENPIE = 1;
+  AdcRegs.ADCTRL1.bit.RESET = 1;
+  asm(" RPT #10 || NOP");
+  AdcRegs.ADCTRL3.bit.ADCBGRFDN = 0x3;
+  DELAY_US(ADC_usDELAY);
+  AdcRegs.ADCTRL3.bit.ADCPWDN = 1;
+  DELAY_US(ADC_usDELAY2);
+  PieCtrlRegs.PIEIER1.bit.INTx6 = 1; //使能外设级中断
+  IER = M_INT3;
+  IER=M_INT1;                      //使能CPU级中断
+  EINT;                              //使能全局中断
+  EDIS;                              //关闭对保护寄存器的访问
+                                     /*配置ADC*/
+  AdcRegs.ADCMAXCONV.all = 0x0000;
+  AdcRegs.ADCCHSELSEQ1.bit.CONV00 = 0x0;
+  AdcRegs.ADCTRL2.bit.EVA_SOC_SEQ1 = 1;
+  AdcRegs.ADCTRL2.bit.INT_ENA_SEQ1 = 1;
+  /*初始化通用定时器T1*/
+  EvaRegs.T1CON.bit.TENABLE = 0; //禁止定时器工作
+  EvaRegs.T1CON.bit.TMODE = 1;   //使用连续增减计数模式
+  EvaRegs.T1PR = 0x1000;         //设置周期寄存器值0x1000，
+                         //计数周期2T1PR=0x2000；载波频率=75M/0x2000=9155
+  EvaRegs.T1CNT = 0x0000; //设置计数初值0x0000；
+  EvaRegs.T1CON.bit.FREE = 3;
+
+  /*初始化通用定时器T2*/
+  EvaRegs.T2CON.bit.TENABLE = 0; //禁止定时器工作
+  EvaRegs.T2CON.bit.TMODE = 2;   //使用连续增计数模式
+  EvaRegs.T2CON.bit.TPS = 2;     //定时器内部1分频(15MHZ)
+  EvaRegs.T2PR = 18749;
+  EvaRegs.GPTCONA.bit.T2TOADC = 2;
+  EvaRegs.T2CNT = 0x0000; //设置计数初值0x0000；
+  EvaRegs.T2CON.bit.FREE = 3;
+
+  /*确定初始位置*/
+  for (i = 0; i < 6; i++) {
+    if (state == contrary[i])
+      j = i;
+  }
+
+  /*设置全比较单元*/
+  EvaRegs.ACTRA.all = ActSeq_contrary[j]; //设置ACTRA控制字
+  EvaRegs.COMCONA.bit.ACTRLD = 2;         //设置ACTR重载条件（立即）
+  EvaRegs.COMCONA.bit.FCOMPOE = 1;        //全比较输出使能，由相应的比较逻辑驱动
+  EvaRegs.CMPR1 = lowestspeed;
+  EvaRegs.CMPR2 = lowestspeed;
+  EvaRegs.CMPR3 = lowestspeed;     //设置初始占空比
+  EvaRegs.COMCONA.bit.CENABLE = 1; //使能比较操作
+
+  /*初始化LCD*/
+  CTRGR = 0x80; //初始化ICETEK-CTR
+  Delay(LCDDELAY);
+  CTRGR = 0x0;
+  Delay(LCDDELAY);
+  CTRGR = 0x80;
+  Delay(LCDDELAY);
+  CTRLR = 0; //关闭东西方向的交通灯
+  Delay(LCDDELAY);
+  CTRLR = 0x40; //关闭南北方向的交通灯
+  Delay(LCDDELAY);
+  TurnOnLCD();                  //打开显示
+  LCDCLS();                     //清除显示内存
+  CTRLCDCMDR = LCDCMDSTARTLINE; //设置显示起始行
+  Delay(LCDDELAY);
+  CTRLCDCR = 0;
+  Delay(LCDDELAY);
+
+  EvaRegs.T1CON.bit.TENABLE = 1; //启动定时器1
+  EvaRegs.T2CON.bit.TENABLE = 1; //启动定时器2
+
+  /*等待捕获中断*/
+  while (1) 
+ {
+    
+      
+    
+
+    ;
+    
+    
+ }
+}
+interrupt void T2PINT_isr(void)
+{
+   	    
+		
+	con++;
+     if(con==400)        //con到400说明时间间隔2秒
+   {  
+     v=0;
+     if(Flag==0)
+    {
+     for(i=0;i<200;i++) 
+     {
+       v=v+Voltage1[i];
+     }
+     v=v/200;           //获取当前时刻电压值（200个采样值的平均值）
+     v1=v;
+     dv=v1-v0;          //当前时刻电压与初始位置电压的电压差
+     if(dv>4350)
+     direction=1;       //电压差大于0.2伏便正转
+     if(dv<-4350)
+     direction=0;
+     else
+     direction=2;
+     dv=abs(dv);
+     quan=dv/4350;     //认为每0.2伏转一圈，此处得出需要转的圈数
+     dest=6*quan;
+    }
+   }
+ 
+    
+  EvaRegs.CMPR1=lowestspeed;
+  EvaRegs.CMPR2=lowestspeed;
+  EvaRegs.CMPR3=lowestspeed;  
+                   //??
+
+	//PID_Control(speed,n);
+	EvaRegs.EVAIFRB.bit.T2PINT=1;													//中断使能
+	PieCtrlRegs.PIEACK.bit.ACK3=1;
+														//允许下一次中断
+        return;
+}
+/*ad采样中断*/
+/*interrupt void adc_isr(void)
+{
+ Voltage1[ConversionCount]=AdcRegs.ADCRESULT0;
+ if(ConversionCount==199)
+ {
+   ConversionCount=0;
+   i0++;
+ }
+ if(i0=1)                   //获取初始位置对应的电压v0
+ {
+   v=0;
+   for(i=0;i<200;i++)
+   {
+    v=v+Voltage1[i];
+   }
+    v=v/200;
+    v0=v;
+ }
+}
+
+ else ConversionCount++;
+ AdcRegs.ADCTRL2.bit.RST_SEQ1=1;
+ AdcRegs.ADCST.bit.INT_SEQ1_CLR=1;
+ PieCtrlRegs.PIEACK.all=PIEACK_GROUP1;
+ 
+ return;
+}*/
+/*捕获换相中断子程序  全比较单元pwm波生成*/
+interrupt void CAP123_isr(void) {
+
+  state = GpioDataRegs.GPADAT.all; //取回寄存器状态
+  state = state >> 8;              //将CAP1-3的值移至后三位
+  state = state & 0x0007;          //清除无关的位
+
+  switch (direction) {
+  case 0:
+    for (i = 0; i < 6; i++) {
+      if (state == right[i])
+        j = i;
+    }
+    EvaRegs.ACTRA.all = ActSeq_right[j];
+    v0=v0-quan*4350;               //记录移动指令完成后位置对应的电压(此处反转）
+    break;
+  case 1:
+    for (i = 0; i < 6; i++) {
+      if (state == contrary[i])
+        j = i;
+    }                             //记录移动指令完成后位置对应的电压(此处正转）
+    EvaRegs.ACTRA.all = ActSeq_contrary[j];
+    v0=v0+quan*4350;   
+    break;
+  case 2:
+    test = 555; // test取一个很大的值保证不会小于dest
+    break;
+  } //设置ACTRA控制字
+
+  if (test < dest) {
+    test++;
+    EvaRegs.CMPR1 = lowestspeed;
+    EvaRegs.CMPR2 = lowestspeed;
+    EvaRegs.CMPR3 = lowestspeed;
+    Flag = 1;
+  } 
+  else {
+    EvaRegs.CMPR1 = 0x1000;
+    EvaRegs.CMPR2 = 0x1000;
+    EvaRegs.CMPR3 = 0x1000;
+    Flag = 0;
+    test=0;
+    }
+  EvaRegs.EVAIFRC.bit.CAP1INT = 1;
+  EvaRegs.EVAIFRC.bit.CAP2INT = 1;
+  EvaRegs.EVAIFRC.bit.CAP3INT = 1; //中断使能
+  PieCtrlRegs.PIEACK.bit.ACK3 = 1; //允许下一次中断
+}
+
+void Delay(unsigned int nDelay) {
+  int ii, jj, kk = 0;
+  for (ii = 0; ii < nDelay; ii++) {
+    for (jj = 0; jj < 60; jj++) {
+      kk++;
+    }
+  }
+}
+
+void TurnOnLCD() {
+  CTRLCDCMDR = LCDCMDTURNON;
+  Delay(LCDDELAY);
+  CTRLCDCR = 0;
+  Delay(2048);
+  CTRLCDCMDR = LCDCMDSTARTLINE;
+  Delay(LCDDELAY);
+  CTRLCDCR = 0;
+  Delay(LCDDELAY);
+}
+
+void LCDCLS() {
+  int a, b;
+  CTRLCDCMDR = LCDCMDSTARTLINE;
+  Delay(LCDDELAY);
+  CTRLCDCR = 0;
+  Delay(LCDDELAY);
+  for (a = 0; a < 8; a++) {
+    CTRLCDCMDR = LCDCMDPAGE + a;
+    Delay(LCDDELAY);
+    CTRLCDCR = 0;
+    Delay(LCDDELAY);
+    CTRLCDCMDR = LCDCMDVERADDRESS;
+    Delay(LCDDELAY);
+    CTRLCDCR = 0;
+    Delay(LCDDELAY);
+    for (b = 0; b < 64; b++) {
+      CTRLCDLCR = 0;
+      Delay(LCDDELAY);
+      CTRLCDCR = 0;
+      Delay(LCDDELAY);
+    }
+    CTRLCDCMDR = LCDCMDPAGE + a;
+    Delay(LCDDELAY);
+    CTRLCDCR = 0;
+    Delay(LCDDELAY);
+    CTRLCDCMDR = LCDCMDVERADDRESS;
+    Delay(LCDDELAY);
+    CTRLCDCR = 0;
+    Delay(LCDDELAY);
+    for (b = 0; b < 64; b++) {
+      CTRLCDRCR = 0;
+      Delay(LCDDELAY);
+      CTRLCDCR = 0;
+      Delay(LCDDELAY);
+    }
+  }
+}
+</pre>
