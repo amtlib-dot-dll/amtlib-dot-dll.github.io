@@ -14,7 +14,7 @@
  
 不过，讲道理，这种大段大段往代码里塞中文的，总感觉在哪里见过:smirk:
 
-![img](images/91ee1463-fe77-4013-8086-86a0b21fbfee.png)
+<img src="images/91ee1463-fe77-4013-8086-86a0b21fbfee.png" alt="Anko logo" height="101" width="220" />
 
 当然你要说Swift支持用emoji写代码我也没意见:trollface:
 
