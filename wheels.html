@@ -1,0 +1,179 @@
+<html>
+
+<head>
+    <title>Test</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <script type="text/javascript">
+        window.addEventListener('load', () => {
+            let canvas = document.getElementById('canvas');
+
+            canvas.width = window.innerWidth * .9;
+            canvas.height = window.innerHeight * .9;
+
+            let context = canvas.getContext('2d');
+
+            context.scale(Math.min(canvas.width, canvas.height) / 800, Math.min(canvas.width, canvas.height) / 800);
+
+            let wheels = [
+                new Wheel(context, 200, 200, 150, [1, 1, 0, 0]),
+                new Wheel(context, 200, 600, 150, [0, 1, 1, 0]),
+                new Wheel(context, 600, 600, 150, [0, 0, 1, 1]),
+                new Wheel(context, 600, 200, 150, [1, 1, 0, 1]),
+            ];
+
+            function draw(timestamp) {
+                context.clearRect(0, 0, 800, 800);
+
+                for (let wheel of wheels) {
+                    wheel.draw();
+                }
+
+                window.requestAnimationFrame(draw);
+            }
+
+            let anchor = -1;
+
+            function pointerEvent(pointer) {
+                if (!pointer) {
+                    anchor = -1;
+                } else {
+                    if (anchor == -1) {
+                        anchor = wheels.findIndex(wheel => wheel.isin(pointer.x, pointer.y));
+                        if (anchor != -1) {
+                            for (let wheel of wheels) {
+                                wheel.anchorAngle = wheel.angle;
+                            }
+
+                            wheels[anchor].anchorRotation = Math.atan2(
+                                pointer.y - wheels[anchor].y,
+                                pointer.x - wheels[anchor].x,
+                            );
+                        }
+                    } else {
+                        let direction = Math.atan2(
+                            pointer.y - wheels[anchor].y,
+                            pointer.x - wheels[anchor].x,
+                        );
+
+                        let wheel = wheels[anchor];
+
+                        for (let index in wheel.relation) {
+                            wheels[index].angle = wheels[index].anchorAngle + wheel.relation[index] * (direction - wheel.anchorRotation);
+                        }
+                    }
+                }
+            }
+
+            canvas.addEventListener('mousemove', (event) => {
+                let pointer = context.getTransform().inverse().transformPoint(new DOMPoint(event.offsetX, event.offsetY));
+
+                if (anchor == -1) {
+                    pointerEvent(null);
+                } else {
+                    pointerEvent(pointer);
+                }
+            });
+            canvas.addEventListener('mousedown', (event) => {
+                let pointer = context.getTransform().inverse().transformPoint(new DOMPoint(event.offsetX, event.offsetY));
+
+                if (event.buttons & 1 == 0) {
+                    pointerEvent(null);
+                } else {
+                    pointerEvent(pointer);
+                }
+            });
+            canvas.addEventListener('mouseup', (event) => {
+                pointerEvent(null);
+            });
+
+            function touchEvent(event) {
+                if (event.targetTouches.length == 0) {
+                    pointerEvent(null);
+                } else {
+                    let touch = event.targetTouches.item(0);
+
+                    var rect = canvas.getBoundingClientRect();
+                    var x = touch.clientX - rect.x;
+                    var y = touch.clientY - rect.y;
+
+                    let pointer = context.getTransform().inverse().transformPoint(new DOMPoint(touch.clientX - rect.x, touch.clientY - rect.y));
+
+                    pointerEvent(pointer);
+                }
+            }
+
+            canvas.addEventListener('touchstart', touchEvent);
+            canvas.addEventListener('touchend', touchEvent);
+            canvas.addEventListener('touchcancel', touchEvent);
+            canvas.addEventListener('touchmove', touchEvent);
+
+            for (let wheel of wheels) {
+                wheel.angle = Math.random() * Math.PI;
+            }
+
+            window.requestAnimationFrame(draw);
+        });
+
+        function Wheel(ctx, x, y, radius, relation) {
+            this.ctx = ctx;
+            this.x = x;
+            this.y = y;
+            this.radius = radius;
+            this.angle = 0;
+            this.relation = relation;
+
+            this.anchorRotation = 0;
+            this.anchorAngle = 0;
+        }
+
+        Wheel.prototype.draw = function () {
+            this.ctx.save();
+
+            if (Math.abs(this.angle % (2 * Math.PI)) < Math.PI / 30) {
+                this.ctx.strokeStyle = 'red';
+            }
+
+            this.ctx.translate(this.x, this.y);
+
+            let r1 = this.radius;
+            let r2 = this.radius + 5;
+
+            this.ctx.beginPath();
+            this.ctx.arc(0, 0, r1, 0, 2 * Math.PI);
+            this.ctx.stroke();
+
+            this.ctx.beginPath();
+            this.ctx.arc(0, 0, r2, 0, 2 * Math.PI);
+            this.ctx.stroke();
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, -r2 - 1.5);
+            this.ctx.lineTo(2, -r2 - 10);
+            this.ctx.lineTo(-2, -r2 - 10);
+            this.ctx.closePath();
+            this.ctx.fill();
+
+            this.ctx.save();
+            this.ctx.rotate(this.angle);
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, -r1 + 1.5);
+            this.ctx.lineTo(2, -r1 + 10);
+            this.ctx.lineTo(-2, -r1 + 10);
+            this.ctx.closePath();
+            this.ctx.stroke();
+            this.ctx.restore();
+
+            this.ctx.restore();
+        };
+
+        Wheel.prototype.isin = function (x, y) {
+            return (x - this.x) * (x - this.x) + (y - this.y) * (y - this.y) <= this.radius * this.radius;
+        };
+    </script>
+</body>
+
+</html>
